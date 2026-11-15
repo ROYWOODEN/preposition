@@ -11,6 +11,7 @@ import { expect, it, vi } from "vitest";
 import {
   dailyBackup,
   restoreMissingDatabase,
+  snapshotBackup,
   writeBackup,
 } from "../src/db/backup.js";
 import { openDatabase } from "../src/db/database.js";
@@ -25,11 +26,7 @@ it("restores a missing database and refuses to overwrite it or accept a broken b
     new Service(store, 1).touch(2, "Backup author");
     const path = join(directory, "bot.sqlite");
     const backups = join(directory, "backups");
-    const backup = await writeBackup(
-      store,
-      backups,
-      "bot-auto-2026-11-15.sqlite",
-    );
+    const backup = await snapshotBackup(store, backups);
     expect(await restoreMissingDatabase(path, backups)).toBe(backup);
     const restored = openDatabase(path);
     try {

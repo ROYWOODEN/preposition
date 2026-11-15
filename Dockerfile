@@ -20,4 +20,4 @@ ENV NODE_ENV=production \
 
 # BotHost mounts /app/data at runtime, replacing the directory from the image.
 USER root
-CMD ["sh", "-ec", "if ! runuser -u node -- test -w /app/data || ! runuser -u node -- test -x /app/data; then install -d -o node -g node -m 0700 /app/data; fi; exec runuser -u node -- node dist/main.js --migrate"]
+CMD ["sh", "-ec", "if ! runuser -u node -- test -w /app/data || ! runuser -u node -- test -x /app/data; then install -d -o node -g node -m 0700 /app/data; fi; exec setpriv --reuid=node --regid=node --init-groups node dist/main.js --migrate"]

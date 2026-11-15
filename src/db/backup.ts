@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   mkdirSync,
   existsSync,
@@ -79,6 +80,14 @@ export async function writeBackup(
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
+}
+
+export function snapshotBackup(store: Store, directory: string) {
+  return writeBackup(
+    store,
+    directory,
+    `bot-${Date.now()}-${randomUUID()}.sqlite`,
+  );
 }
 
 const moscowTime = new Intl.DateTimeFormat("sv-SE", {

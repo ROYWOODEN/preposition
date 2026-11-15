@@ -9,7 +9,11 @@ import { flushNotifications } from "./notifications.js";
 import { eq } from "drizzle-orm";
 import { notifications } from "./db/schema.js";
 import { acquireLock } from "./lock.js";
-import { dailyBackup, restoreMissingDatabase } from "./db/backup.js";
+import {
+  dailyBackup,
+  restoreMissingDatabase,
+  snapshotBackup,
+} from "./db/backup.js";
 try {
   loadEnvFile();
 } catch {
@@ -120,7 +124,16 @@ async function stop() {
   if (stopping) return;
   stopping = true;
   log.info({ event: "stopping" });
-  if (bot.isRunning()) await bot.stop();
+  if (bot.isRunning()) {
+    try {
+      await bot.stop();
+    } catch {
+      log.warn(
+        { event: "polling_stop_failed" },
+        "Не удалось сохранить позицию обновлений Telegram",
+      );
+    }
+  }
 }
 process.once("SIGINT", () => void stop());
 process.once("SIGTERM", () => void stop());
@@ -171,6 +184,21 @@ try {
   clearInterval(backupTimer);
   await notificationJob;
   await backupJob;
+  if (stopping) {
+    try {
+      const file = await snapshotBackup(store, backupDirectory);
+      log.info(
+        { event: "shutdown_backup_created", file },
+        "Копия перед остановкой создана",
+      );
+    } catch (err) {
+      log.error(
+        { event: "shutdown_backup_failed", err },
+        "Не удалось создать копию перед остановкой",
+      );
+      process.exitCode = 1;
+    }
+  }
   store.sqlite.close();
   log.info({ event: "stopped" });
 }
