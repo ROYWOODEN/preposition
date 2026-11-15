@@ -20,17 +20,29 @@ export const uid = (ctx: Context) => {
   if (!ctx.from) throw new UserError("Не удалось определить пользователя.");
   return ctx.from.id;
 };
-export const back = (callback = "home") =>
+export function back(callback = "home") {
+  const keys = new InlineKeyboard();
+  if (callback !== "home") keys.text("⬅️ Назад", callback);
+  return keys.text("🏠 Главное меню", "home");
+}
+export function listOrigin(value?: string) {
+  const match = /^([hqdm])(\d{1,12})$/.exec(value ?? "");
+  if (!match) return undefined;
+  const screens: Record<string, string> = {
+    h: "history",
+    q: "queuepage",
+    d: "drafts",
+    m: "minepage",
+  };
+  return `${screens[match[1] ?? ""]}:${match[2]}`;
+}
+export const draftActions = (id: number, origin = "") =>
   new InlineKeyboard()
-    .text("⬅️ Назад", callback)
-    .text("🏠 Главное меню", "home");
-export const draftActions = (id: number) =>
-  new InlineKeyboard()
-    .text("👁 Предпросмотр", `view:${id}`)
-    .text("✏️ Редактировать текст", `edit:${id}`)
+    .text("👁 Предпросмотр", `view:${id}:${origin}`)
+    .text("✏️ Редактировать текст", `edit:${id}::${origin}`)
     .row()
-    .text("📎 Добавить медиа", `resume:${id}`)
-    .text("🗂 Черновики", "drafts:0")
+    .text("📎 Добавить медиа", `resume:${id}:${origin}`)
+    .text("🗂 Черновики", listOrigin(origin) ?? "drafts:0")
     .row()
     .text("📝 Новый пост", "new");
 
@@ -53,7 +65,7 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
     const k = new InlineKeyboard()
       .text("🛡 Очередь", "queuepage:0")
       .text("📚 История", "history:0");
-    if (uid(ctx) === s.owner)
+    if (s.isAdmin(uid(ctx)))
       k.row()
         .text("⚙️ Настройки", "settings")
         .text("👥 Команда", "moderators")
@@ -63,10 +75,7 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
         .row()
         .text("🔎 Проверка постов", "review");
     k.row().text("🏠 Главное меню", "home");
-    await ctx.reply(
-      "🛠 Управление\n\nВыберите нужный раздел. Все инструменты собраны здесь, чтобы не занимать экран клавиатурой.",
-      { reply_markup: k },
-    );
+    await ctx.reply("🛠 Управление", { reply_markup: k });
   }
   async function hideMenu(ctx: Context) {
     await ctx.reply("⌨️ Клавиатура скрыта.", {
@@ -83,14 +92,19 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
     });
   }
   async function fresh(ctx: Context) {
-    s.newDraft(uid(ctx));
+    s.state(uid(ctx), "");
     await ctx.reply(template(s.store, "instruction"), {
       reply_markup: new InlineKeyboard()
         .text("🗂 Черновики", "drafts:0")
         .text("🏠 Главное меню", "home"),
     });
   }
-  async function card(ctx: Context, id: number, moderation = false) {
+  async function card(
+    ctx: Context,
+    id: number,
+    moderation = false,
+    origin = "",
+  ) {
     const actor = uid(ctx),
       sub = s.get(id);
     const own = sub.authorId === actor;
@@ -113,12 +127,13 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
       !moderation &&
       (sub.status === "draft" || sub.status === "pending")
     ) {
-      k.text("✏️ Редактировать текст", `edit:${id}`);
-      if (sub.status === "draft") k.text("📎 Добавить медиа", `resume:${id}`);
+      k.text("✏️ Редактировать текст", `edit:${id}::${origin}`);
+      if (sub.status === "draft")
+        k.text("📎 Добавить медиа", `resume:${id}:${origin}`);
       if (s.setting("anonymous", "true") === "true" || sub.anonymous)
         k.row().text(
           sub.anonymous ? "👤 Показать моё имя" : "🙈 Сделать анонимным",
-          `anon:${id}`,
+          `anon:${id}:${origin}`,
         );
       if (sub.status === "draft" && hasContent)
         k.row().text(
@@ -126,28 +141,29 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
           `submit:${id}:${sub.version}`,
         );
       if (sub.status === "draft" && s.files(id).length)
-        k.row().text("🧹 Удалить вложения", `clear:${id}`);
+        k.row().text("🧹 Удалить вложения", `clear:${id}:${origin}`);
       k.row().text(
         sub.status === "draft" ? "🗑 Удалить черновик" : "Отменить заявку",
         `cancel:${id}`,
       );
     }
     if (moderation && sub.status === "pending") {
-      k.text("✅ Одобрить", `approve:${id}:${sub.version}`).text(
+      k.text("✅ Одобрить", `approve:${id}:${sub.version}:${origin}`).text(
         "❌ Отклонить",
-        `reject:${id}:${sub.version}`,
+        `reject:${id}:${sub.version}:${origin}`,
       );
       if (s.setting("editing", "true") === "true")
-        k.row().text("✏️ Редактировать текст", `edit:${id}:m`);
+        k.row().text("✏️ Редактировать текст", `edit:${id}:m:${origin}`);
     }
     k.row()
       .text(
         "⬅️ К списку",
-        moderation
-          ? "queuepage:0"
-          : sub.status === "draft"
-            ? "drafts:0"
-            : "minepage:0",
+        listOrigin(origin) ??
+          (moderation
+            ? "queuepage:0"
+            : sub.status === "draft"
+              ? "drafts:0"
+              : "minepage:0"),
       )
       .text("🏠 Меню", "home");
     const lines = [
@@ -207,7 +223,7 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
           : statusNames[row.status].split(" ")[0];
       k.text(
         `${status} ${title(s, row.id, kind !== "queue")} · ${date(stamp)} · ${snippet(row.body)}`,
-        `${kind === "queue" ? "moderate" : "view"}:${row.id}`,
+        `${kind === "queue" ? "moderate" : "view"}:${row.id}:${kind[0]}${offset}`,
       ).row();
     }
     if (offset > 0) k.text("← Назад", `${prefix}:${Math.max(0, offset - 10)}`);
@@ -218,6 +234,7 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
       if (shown.length) k.text("🧹 Очистить", "cleardrafts");
       k.row();
     }
+    if (kind === "queue") k.text("⬅️ Управление", "manage");
     k.text("🏠 Главное меню", "home");
     const heading =
       kind === "queue"
@@ -252,6 +269,7 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
       .row()
       .text("↩️ Сбросить настройки", "resetsettings")
       .row()
+      .text("⬅️ Управление", "manage")
       .text("🏠 Главное меню", "home");
     await ctx.reply(
       "⚙️ Настройки\n\n✅ — включено, ⏸ — выключено. Нажмите переключатель, чтобы изменить.\n\nПриём — разрешает отправлять новые заявки.\nАнонимность — позволяет автору скрыть своё имя от читателей.\nРедактирование — разрешает модераторам менять текст перед публикацией.\n\nЛимит относится к заявкам, которые ещё ждут решения.",
@@ -294,15 +312,35 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
     await refreshPerson(s, bot.api, s.owner, channel);
     lines.push(`👑 Владелец: ${person(s.user(s.owner))}`);
     const k = new InlineKeyboard();
-    for (const m of mods) {
+    const ordered = mods
+      .filter((m) => m.role === "head")
+      .concat(mods.filter((m) => m.role === "moderator"));
+    let previousRole: (typeof mods)[number]["role"] | undefined;
+    for (const m of ordered) {
       await refreshPerson(s, bot.api, m.id, channel);
       const user = s.user(m.id);
-      lines.push(`🛡 Модератор: ${person(user)}`);
-      k.text(`Убрать: ${user.name.slice(0, 40)}`, `removeask:${m.id}`).row();
+      if (m.role !== previousRole) {
+        lines.push(
+          "",
+          m.role === "head"
+            ? "<b>⭐ Главные модераторы</b>"
+            : "<b>🛡 Модераторы</b>",
+        );
+        previousRole = m.role;
+      }
+      lines.push(person(user));
+      if (uid(ctx) === s.owner || m.role === "moderator")
+        k.text(`Убрать: ${user.name.slice(0, 30)}`, `removeask:${m.id}`).row();
+      if (uid(ctx) === s.owner && m.role === "moderator")
+        k.text(
+          `Повысить: ${user.name.slice(0, 25)}`,
+          `promoteask:${m.id}`,
+        ).row();
     }
     if (!mods.length) lines.push("\nМодераторы пока не назначены.");
     k.text("➕ Добавить модератора", "mod:add")
       .row()
+      .text("⬅️ Управление", "manage")
       .text("🏠 Главное меню", "home");
     await ctx.reply(lines.join("\n"), {
       parse_mode: "HTML",
@@ -348,6 +386,7 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
   }
   async function statistics(ctx: Context) {
     s.admin(uid(ctx));
+    s.state(uid(ctx), "");
     const rows = s.store.db.select().from(t.submissions).all();
     await ctx.reply(
       [
@@ -361,17 +400,18 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
         `📢 Опубликовано: ${rows.filter((r) => r.delivery === "published").length}`,
         `🔎 Требуют проверки: ${rows.filter((r) => ["needs_review", "failed"].includes(r.delivery)).length}`,
       ].join("\n"),
-      { reply_markup: back() },
+      { reply_markup: back("manage") },
     );
   }
   async function history(ctx: Context, offset = 0) {
     s.mod(uid(ctx));
+    s.state(uid(ctx), "");
     if (!Number.isSafeInteger(offset) || offset < 0)
       throw new UserError("Некорректная страница.");
     const rows = s.store.db
       .select()
       .from(t.history)
-      .where(uid(ctx) === s.owner ? undefined : eq(t.history.actorId, uid(ctx)))
+      .where(s.isAdmin(uid(ctx)) ? undefined : eq(t.history.actorId, uid(ctx)))
       .orderBy(desc(t.history.id))
       .limit(11)
       .offset(offset)
@@ -385,17 +425,18 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
       if (r.submissionId)
         k.text(
           `№${r.submissionId} · ${date(r.at)}`,
-          `moderate:${r.submissionId}`,
+          `moderate:${r.submissionId}:h${offset}`,
         ).row();
     }
     if (!rows.length) lines.push("Действий пока нет.");
     if (offset > 0) k.text("← Назад", `history:${Math.max(0, offset - 10)}`);
     if (rows.length > 10) k.text("Далее →", `history:${offset + 10}`);
-    k.row().text("🏠 Главное меню", "home");
+    k.row().text("⬅️ Управление", "manage").text("🏠 Главное меню", "home");
     await ctx.reply(lines.join("\n").slice(0, 4000), { reply_markup: k });
   }
   async function blocked(ctx: Context) {
     s.admin(uid(ctx));
+    s.state(uid(ctx), "");
     const users = s.store.db
       .select()
       .from(t.users)
@@ -410,12 +451,14 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
           .text("Заблокировать", "block:yes")
           .text("Разблокировать", "block:no")
           .row()
+          .text("⬅️ Управление", "manage")
           .text("🏠 Меню", "home"),
       },
     );
   }
   async function review(ctx: Context) {
     s.admin(uid(ctx));
+    s.state(uid(ctx), "");
     const rows = s.store.db
       .select()
       .from(t.submissions)
@@ -426,7 +469,7 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
       k.text(`№${r.id} — уже в канале`, `resolve:${r.id}:published`)
         .text("Вернуть в очередь", `resolve:${r.id}:retry`)
         .row();
-    k.text("🏠 Меню", "home");
+    k.text("⬅️ Управление", "manage").text("🏠 Меню", "home");
     await ctx.reply(
       "🔎 Проверка публикаций\n\n" +
         (rows.length
@@ -442,7 +485,7 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
         (s.isMod(uid(ctx))
           ? "\n\n🛡 Модерация\nОткройте очередь, проверьте автора и желание публиковаться анонимно. Кнопка «Отклонить» предлагает готовые причины или собственный ответ."
           : "") +
-        (uid(ctx) === s.owner
+        (s.isAdmin(uid(ctx))
           ? "\n\n👥 Команда\nДобавляйте модераторов по имени пользователя или через приглашение. В настройках отдельно находятся сообщения бота и причины отклонения."
           : ""),
       { reply_markup: back() },

@@ -93,15 +93,13 @@ export async function resolvePerson(
   );
 }
 export function grantModerator(s: Service, actor: number, id: number) {
-  s.admin(actor);
+  s.manageModerator(actor, id);
   s.user(id);
-  if (id === s.owner) throw new UserError("У владельца уже есть все права.");
   s.store.db.insert(t.moderators).values({ id }).onConflictDoNothing().run();
   s.audit(actor, null, `mod:add:${id}`);
 }
 export function removeModerator(s: Service, actor: number, id: number) {
-  s.admin(actor);
-  if (id === s.owner) throw new UserError("Права владельца неизменяемы.");
+  s.manageModerator(actor, id);
   s.store.db.delete(t.moderators).where(eq(t.moderators.id, id)).run();
   s.audit(actor, null, `mod:remove:${id}`);
 }
@@ -113,7 +111,11 @@ export function createInvitation(s: Service, actor: number) {
   const token = randomBytes(24).toString("base64url");
   s.store.db
     .insert(t.invitations)
-    .values({ hash: digest(token), expiresAt: Date.now() + 86400000 })
+    .values({
+      hash: digest(token),
+      expiresAt: Date.now() + 86400000,
+      issuerId: actor,
+    })
     .run();
   return token;
 }
@@ -137,7 +139,7 @@ export function acceptInvitation(s: Service, actor: number, token: string) {
       .run();
     enqueue(
       s.store,
-      s.owner,
+      row.issuerId !== null && s.isAdmin(row.issuerId) ? row.issuerId : s.owner,
       `👋 ${s.user(actor).name} открыл приглашение в модераторы.\nПроверьте профиль и подтвердите назначение.`,
       { text: "👤 Проверить кандидата", callback: `candidate:${hash}` },
     );
@@ -157,6 +159,8 @@ export function invitationCandidate(s: Service, actor: number, hash: string) {
     row.expiresAt < Date.now()
   )
     throw new UserError("Это приглашение уже обработано или истекло.");
+  if (actor !== s.owner && row.issuerId !== actor)
+    throw new UserError("Это приглашение создал другой администратор.");
   return row.candidateId;
 }
 export function confirmInvitation(

@@ -17,6 +17,9 @@ export const moderators = sqliteTable("moderators", {
   id: integer("id")
     .primaryKey()
     .references(() => users.id),
+  role: text("role", { enum: ["moderator", "head"] })
+    .notNull()
+    .default("moderator"),
 });
 export const submissions = sqliteTable(
   "submissions",
@@ -111,6 +114,7 @@ export const notifications = sqliteTable("notifications", {
   buttonCallback: text("button_callback"),
 });
 export const invitations = sqliteTable("moderator_invitations", {
+  issuerId: integer("issuer_id"),
   hash: text("hash").primaryKey(),
   expiresAt: integer("expires_at").notNull(),
   candidateId: integer("candidate_id").references(() => users.id),

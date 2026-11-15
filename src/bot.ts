@@ -32,7 +32,7 @@ import {
 } from "./reasons.js";
 import { isSubscriber } from "./membership.js";
 import { title } from "./presentation.js";
-import { createUI, uid, back, draftActions } from "./ui.js";
+import { createUI, uid, back, draftActions, listOrigin } from "./ui.js";
 
 export function createBot(
   token: string,
@@ -103,8 +103,8 @@ export function createBot(
           reply_markup:
             state === "mod:add"
               ? new InlineKeyboard()
-                    .text("👤 Выбрать в Telegram", "pickmoderator")
-                    .row()
+                  .text("👤 Выбрать в Telegram", "pickmoderator")
+                  .row()
                   .text("🔗 Получить приглашение", "invite")
                   .text("⬅️ Модераторы", "moderators")
               : back(),
@@ -140,7 +140,11 @@ export function createBot(
   bot.command("review", ui.review);
   bot.hears("🛠 Управление", ui.management);
   bot.hears("⌨️ Скрыть меню", ui.hideMenu);
-  bot.hears("↩️ Отмена выбора", ui.home);
+  bot.hears("↩️ Отмена выбора", async (ctx) => {
+    s.admin(uid(ctx));
+    await ctx.reply("Выбор отменён.", { reply_markup: ui.menu(uid(ctx)) });
+    await ui.addModerator(ctx);
+  });
   bot.hears("📝 Предложить пост", ui.fresh);
   bot.hears("🗂 Черновики", (ctx) => ui.list(ctx, "drafts"));
   bot.hears("📋 Мои заявки", (ctx) => ui.list(ctx, "mine"));
@@ -155,7 +159,8 @@ export function createBot(
   bot.on("callback_query:data", async (ctx) => {
     await ctx.answerCallbackQuery();
     const actor = uid(ctx);
-    const [action, arg, extra] = ctx.callbackQuery.data.split(":");
+    const [action, arg, extra, detail, origin] =
+      ctx.callbackQuery.data.split(":");
     const id = Number(arg);
     if (action === "joincheck") {
       const [kind, token] = s.state(actor).split(":");
@@ -209,22 +214,27 @@ export function createBot(
         id,
       );
     if (action === "view" || action === "moderate")
-      return ui.card(ctx, id, action === "moderate");
+      return ui.card(ctx, id, action === "moderate", extra);
     if (action === "history") return ui.history(ctx, id);
     if (action === "resume") {
       s.resume(actor, id);
+      if (listOrigin(extra)) s.state(actor, `draft:${id}:${extra}`);
       await ctx.reply(
         `📎 Добавьте медиа в черновик ${title(s, id, true)}.\n\nФайлы попадут только в этот пост. Для замены текста используйте «Редактировать текст».`,
-        { reply_markup: draftActions(id) },
+        { reply_markup: back(`view:${id}:${extra ?? ""}`) },
       );
       return;
     }
     if (action === "edit") {
       s.editable(actor, id);
-      s.state(actor, `edit:${id}:${extra ?? ""}`);
+      s.state(actor, `edit:${id}:${extra ?? ""}:${detail ?? ""}`);
       await ctx.reply(
         "✏️ Редактирование текста\n\nПришлите новый текст с нужным форматированием. Он заменит прежний, вложения останутся.",
-        { reply_markup: back(`${extra === "m" ? "moderate" : "view"}:${id}`) },
+        {
+          reply_markup: back(
+            `${extra === "m" ? "moderate" : "view"}:${id}:${detail ?? ""}`,
+          ),
+        },
       );
       return;
     }
@@ -232,14 +242,18 @@ export function createBot(
       const sub = s.editable(actor, id);
       if (sub.authorId !== actor || sub.status !== "draft")
         throw new UserError("Можно менять только свой черновик.");
-      s.store.db.delete(t.media).where(eq(t.media.submissionId, id)).run();
-      s.edit(actor, id, sub.body, sub.entities);
-      await ui.card(ctx, id);
+      s.store.sqlite.transaction(() => {
+        s.store.db.delete(t.media).where(eq(t.media.submissionId, id)).run();
+        if (sub.body.trim()) s.edit(actor, id, sub.body, sub.entities);
+        else s.cancel(actor, id);
+      })();
+      if (!sub.body.trim()) return ui.list(ctx, "drafts");
+      await ui.card(ctx, id, false, extra);
       return;
     }
     if (action === "anon") {
       s.anonymous(actor, id);
-      await ui.card(ctx, id);
+      await ui.card(ctx, id, false, extra);
       return;
     }
     if (action === "cancel") {
@@ -272,8 +286,8 @@ export function createBot(
       await publish(s, bot.api, channel, actor, id, Number(extra));
       await ctx.reply("✅ Пост опубликован в канале!", {
         reply_markup: new InlineKeyboard()
-          .text("🛡 Следующие заявки", "queuepage:0")
-          .text("📋 Открыть пост", `moderate:${id}`),
+          .text("⬅️ К списку", listOrigin(detail) ?? "queuepage:0")
+          .text("📋 Открыть пост", `moderate:${id}:${detail ?? ""}`),
       });
       await drain();
       return;
@@ -284,11 +298,11 @@ export function createBot(
       for (const r of reasons(s))
         k.text(
           r.text.slice(0, 34) + (r.text.length > 34 ? "…" : ""),
-          `reason:${id}:${extra}:${r.key.slice(6)}`,
+          `reason:${id}:${extra}:${r.key.slice(6)}:${detail ?? ""}`,
         ).row();
-      k.text("✍️ Своя причина", `custom:${id}:${extra}`)
+      k.text("✍️ Своя причина", `custom:${id}:${extra}:${detail ?? ""}`)
         .row()
-        .text("⬅️ К заявке", `moderate:${id}`);
+        .text("⬅️ К заявке", `moderate:${id}:${detail ?? ""}`);
       await ctx.reply(
         "❌ Почему отклоняем пост?\n\nВыберите готовую причину или напишите свою. Автор получит выбранный ответ.",
         { reply_markup: k },
@@ -296,26 +310,43 @@ export function createBot(
       return;
     }
     if (action === "reason") {
-      const index = Number(ctx.callbackQuery.data.split(":")[3]);
+      const index = Number(detail);
       if (!Number.isInteger(index) || index < 0 || index > 999999)
         throw new UserError("Неизвестная причина.");
       s.reject(actor, id, Number(extra), reason(s, "reason" + index));
       await ctx.reply("❌ Заявка отклонена. Автору отправляется причина.", {
-        reply_markup: new InlineKeyboard().text("🛡 К очереди", "queuepage:0"),
+        reply_markup: back(listOrigin(origin) ?? "queuepage:0"),
       });
       await drain();
       return;
     }
     if (action === "custom") {
       s.mod(actor);
-      s.state(actor, `reject:${id}:${extra}`);
+      s.state(actor, `reject:${id}:${extra}:${detail ?? ""}`);
       await ctx.reply(
         "✍️ Напишите причину отклонения — до 500 символов. Этот текст получит автор.",
-        { reply_markup: back(`moderate:${id}`) },
+        { reply_markup: back(`moderate:${id}:${detail ?? ""}`) },
       );
       return;
     }
     s.admin(actor);
+    if (action === "promoteask" || action === "promote") {
+      if (actor !== s.owner) throw new UserError("Только владелец.");
+      if (action === "promoteask") {
+        await ctx.reply(
+          `Назначить главного модератора?\n\n${person(s.user(id))}`,
+          {
+            parse_mode: "HTML",
+            reply_markup: new InlineKeyboard()
+              .text("Назначить", `promote:${id}`)
+              .text("Отмена", "moderators"),
+          },
+        );
+        return;
+      }
+      s.promoteModerator(actor, id);
+      return ui.moderators(ctx);
+    }
     if (action === "statistics") return ui.statistics(ctx);
     if (action === "blocked") return ui.blocked(ctx);
     if (action === "review") return ui.review(ctx);
@@ -429,6 +460,7 @@ export function createBot(
       return;
     }
     if (action === "removeask") {
+      s.manageModerator(actor, id);
       s.state(actor, `confirmremove:${id}`);
       await ctx.reply(`Убрать модератора ${person(s.user(id))}?`, {
         parse_mode: "HTML",
@@ -465,7 +497,7 @@ export function createBot(
     if (action === "block") {
       s.state(actor, `block:${arg}`);
       await ctx.reply("Пришлите @username или ссылку на пользователя.", {
-        reply_markup: back(),
+        reply_markup: back("blocked"),
       });
       return;
     }
@@ -531,7 +563,9 @@ export function createBot(
         .where(eq(t.submissions.id, id))
         .run();
       s.audit(actor, id, `resolve:${extra}`);
-      await ctx.reply("✅ Результат сохранён.", { reply_markup: back() });
+      await ctx.reply("✅ Результат сохранён.", {
+        reply_markup: back("review"),
+      });
       return;
     }
     throw new UserError("Эта кнопка устарела. Откройте нужный раздел заново.");
@@ -545,7 +579,7 @@ export function createBot(
       });
       return;
     }
-    const [stateAction, arg, extra] = s.state(actor).split(":");
+    const [stateAction, arg, extra, origin] = s.state(actor).split(":");
     const knownAlbum = msg.media_group_id
       ? s.albumDraft(actor, msg.media_group_id)
       : undefined;
@@ -578,20 +612,20 @@ export function createBot(
       return ui.candidate(ctx, target);
     }
     if (action === "edit") {
-      if (!msg.text)
+      if (!msg.text?.trim())
         throw new UserError(
           "Пришлите новый текст. Вложения можно добавить отдельно.",
         );
       s.edit(actor, Number(arg), msg.text, JSON.stringify(msg.entities ?? []));
       s.state(actor, "");
-      return ui.card(ctx, Number(arg), extra === "m");
+      return ui.card(ctx, Number(arg), extra === "m", origin);
     }
     if (action === "reject") {
       if (!msg.text) throw new UserError("Напишите причину текстом.");
       s.reject(actor, Number(arg), Number(extra), msg.text);
       s.state(actor, "");
       await ctx.reply("❌ Заявка отклонена. Автору отправляется причина.", {
-        reply_markup: new InlineKeyboard().text("🛡 К очереди", "queuepage:0"),
+        reply_markup: back(listOrigin(origin) ?? "queuepage:0"),
       });
       await drain();
       return;
@@ -607,8 +641,7 @@ export function createBot(
         s.set("limit", String(limit));
       } else {
         const target = await resolvePerson(s, bot.api, value, channel);
-        if (target === s.owner)
-          throw new UserError("Права владельца неизменяемы.");
+        s.manageModerator(actor, target);
         s.store.db
           .update(t.users)
           .set({ blocked: arg === "yes" })
@@ -623,7 +656,7 @@ export function createBot(
             ? `showtemplate:${arg}`
             : action === "limit"
               ? "settings"
-              : "home",
+              : "blocked",
         ),
       });
       return;
@@ -635,7 +668,7 @@ export function createBot(
       msg.document ??
       msg.audio ??
       msg.voice;
-    if (!file && !msg.text)
+    if (!file && !msg.text?.trim())
       throw new UserError(
         "Поддерживаются текст, фото, видео, документы, GIF, аудио и голосовые.",
       );
@@ -700,7 +733,12 @@ export function createBot(
     if (id !== undefined && album === undefined)
       await ctx.reply(
         `💾 Черновик ${title(s, id, true)} сохранён${msg.media_group_id ? " — собираю альбом" : ""}.\n\nПосмотрите, как будет выглядеть пост, или отредактируйте его. Чтобы дополнить именно этот пост, нажмите «Добавить медиа». Следующее отдельное сообщение создаст новый черновик.`,
-        { reply_markup: draftActions(id) },
+        {
+          reply_markup: draftActions(
+            id,
+            action === "draft" ? extra : undefined,
+          ),
+        },
       );
   });
   return bot;

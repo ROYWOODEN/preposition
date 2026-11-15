@@ -22,7 +22,10 @@ export function openDatabase(path: string) {
             "SELECT button_text, button_callback FROM notifications LIMIT 0",
           )
           .all();
-        sqlite.prepare("SELECT hash FROM moderator_invitations LIMIT 0").all();
+        sqlite
+          .prepare("SELECT hash, issuer_id FROM moderator_invitations LIMIT 0")
+          .all();
+        sqlite.prepare("SELECT role FROM moderators LIMIT 0").all();
       } catch {
         throw new Error(
           "База данных требует обновления. Остановите бота и выполните npm run db:migrate, затем запустите снова.",

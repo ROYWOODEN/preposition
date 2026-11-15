@@ -33,7 +33,7 @@ it("upgrades the previous database without losing posts, templates or pending no
         ),
       })
       .parse(JSON.parse(readFileSync("migrations/meta/_journal.json", "utf8")));
-    const old = { ...journal, entries: journal.entries.slice(0, 2) };
+    const old = { ...journal, entries: journal.entries.slice(0, 3) };
     writeFileSync(join(dir, "meta", "_journal.json"), JSON.stringify(old));
     for (const entry of old.entries)
       copyFileSync(
@@ -47,6 +47,7 @@ it("upgrades the previous database without losing posts, templates or pending no
         "INSERT INTO users (id,name,created_at,active_at) VALUES (?,?,?,?)",
       )
       .run(2, "Author", 1, 1);
+    store.sqlite.prepare("INSERT INTO moderators (id) VALUES (?)").run(2);
     store.sqlite
       .prepare(
         "INSERT INTO submissions (id,author_id,body,status,created_at,updated_at) VALUES (?,?,?,?,?,?)",
@@ -63,6 +64,10 @@ it("upgrades the previous database without losing posts, templates or pending no
     store.migrate();
     store.migrate();
     expect(() => store.assertReady()).not.toThrow();
+    expect(store.db.select().from(t.moderators).get()).toEqual({
+      id: 2,
+      role: "moderator",
+    });
     expect(store.db.select().from(t.submissions).get()?.body).toBe(
       "Existing draft",
     );

@@ -5,8 +5,27 @@ import { Service } from "../src/service.js";
 import { compose } from "../src/content.js";
 import { readConfig } from "../src/config.js";
 import * as t from "../src/db/schema.js";
+import { grantModerator, removeModerator } from "../src/people.js";
 describe("SQLite and business rules", () => {
   let store: ReturnType<typeof openDatabase>, s: Service;
+  it("delegates administration without letting heads change protected roles", () => {
+    s.touch(4, "Other head");
+    s.touch(5, "Candidate");
+    expect(() => s.admin(3)).toThrow();
+    grantModerator(s, 1, 4);
+    s.promoteModerator(1, 3);
+    s.promoteModerator(1, 4);
+    expect(() => s.admin(3)).not.toThrow();
+    grantModerator(s, 3, 5);
+    expect(s.isMod(5)).toBe(true);
+    expect(() => s.promoteModerator(3, 5)).toThrow();
+    for (const protectedId of [1, 3, 4])
+      expect(() => removeModerator(s, 3, protectedId)).toThrow();
+    removeModerator(s, 3, 5);
+    expect(s.isMod(5)).toBe(false);
+    removeModerator(s, 1, 3);
+    expect(s.isAdmin(3)).toBe(false);
+  });
   beforeEach(() => {
     store = openDatabase(":memory:");
     store.migrate();

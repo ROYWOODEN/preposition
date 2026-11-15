@@ -5,6 +5,9 @@ import * as t from "./db/schema.js";
 import { compose } from "./content.js";
 import { template } from "./templates.js";
 import { enqueue } from "./notifications.js";
+const hasDraftContent = sql`(length(trim(${t.submissions.body})) > 0 OR EXISTS (
+  SELECT 1 FROM ${t.media} WHERE ${t.media.submissionId} = ${t.submissions.id}
+))`;
 export class Service {
   constructor(
     readonly store: Store,
@@ -57,7 +60,43 @@ export class Service {
     if (!this.isMod(id)) throw new UserError("Нет прав модератора.");
   }
   admin(id: number) {
-    if (id !== this.owner) throw new UserError("Только владелец.");
+    if (!this.isAdmin(id))
+      throw new UserError("Нужны права владельца или главного модератора.");
+  }
+  isHead(id: number) {
+    return (
+      this.store.db
+        .select({ role: t.moderators.role })
+        .from(t.moderators)
+        .where(eq(t.moderators.id, id))
+        .get()?.role === "head"
+    );
+  }
+  isAdmin(id: number) {
+    return id === this.owner || (this.isHead(id) && !this.user(id).blocked);
+  }
+  manageModerator(actor: number, target: number) {
+    this.admin(actor);
+    if (target === this.owner || target === actor)
+      throw new UserError("Нельзя изменить права владельца или свои права.");
+    if (actor !== this.owner && this.isHead(target))
+      throw new UserError(
+        "Управлять главными модераторами может только владелец.",
+      );
+  }
+  promoteModerator(actor: number, target: number) {
+    if (actor !== this.owner) throw new UserError("Только владелец.");
+    this.manageModerator(actor, target);
+    this.access(target);
+    const result = this.store.db
+      .update(t.moderators)
+      .set({ role: "head" })
+      .where(
+        and(eq(t.moderators.id, target), eq(t.moderators.role, "moderator")),
+      )
+      .run();
+    if (!result.changes) throw new UserError("Выберите обычного модератора.");
+    this.audit(actor, null, `mod:promote:${target}`);
   }
   get(id: number) {
     const s = this.store.db
@@ -114,7 +153,7 @@ export class Service {
           ? and(
               eq(t.submissions.authorId, authorId),
               draftsOnly
-                ? eq(t.submissions.status, "draft")
+                ? and(eq(t.submissions.status, "draft"), hasDraftContent)
                 : sql`${t.submissions.status} <> 'draft' AND (${t.submissions.status} <> 'cancelled' OR ${t.submissions.submittedAt} IS NOT NULL)`,
             )
           : eq(t.submissions.status, "pending"),
@@ -151,6 +190,7 @@ export class Service {
           and(
             eq(t.submissions.authorId, userId),
             eq(t.submissions.status, "draft"),
+            hasDraftContent,
           ),
         )
         .get()?.total ?? 0;

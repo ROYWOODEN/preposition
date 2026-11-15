@@ -34,6 +34,8 @@ export function historyAction(s: Service, action: string) {
   if (action === "reason:add") return "Добавлена причина отклонения";
   if (action === "reason:delete") return "Удалена причина отклонения";
   const [verb, detail, id] = action.split(":");
+  if (verb === "mod" && detail === "promote")
+    return `Назначен главный модератор: ${s.user(Number(id)).name}`;
   if (verb === "mod")
     return `${detail === "add" ? "Назначен модератор" : "Удалён модератор"}: ${s.user(Number(id)).name}`;
   if (verb === "block")

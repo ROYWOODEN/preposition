@@ -180,11 +180,16 @@ function pending(author = 2) {
   return s.get(d.id);
 }
 
-it("starts empty draft with only navigation, adds preview after saving", async () => {
+it("opens the composer without creating a draft until content arrives", async () => {
+  s.newDraft(2); // A legacy empty draft remains in the database.
   await bot.handleUpdate(message("📝 Предложить пост"));
+  await bot.handleUpdate(message("📝 Предложить пост"));
+  expect(store.db.select().from(t.submissions).all()).toHaveLength(1);
+  expect(s.list(2, 0, true)).toEqual([]);
   expect(JSON.stringify(lastText()?.reply_markup)).not.toContain("view:");
   expect(json()).not.toContain("clear:");
   await bot.handleUpdate(message("Пост"));
+  expect(s.list(2, 0, true)).toHaveLength(1);
   expect(JSON.stringify(lastText()?.reply_markup)).toContain("view:");
 });
 it("keeps two independent drafts and resumes only the chosen one", async () => {
@@ -217,12 +222,12 @@ it("routes delayed album parts to their draft without changing another active dr
   await bot.handleUpdate(photo("album"));
   const first = s.draft(2);
   await bot.handleUpdate(message("📝 Предложить пост"));
+  await bot.handleUpdate(message("Другой пост"));
   const second = s.draft(2);
   await bot.handleUpdate(photo("album"));
   expect(s.files(first.id)).toHaveLength(2);
   expect(s.files(second.id)).toHaveLength(0);
-  expect(s.state(2)).toBe(`draft:${second.id}`);
-  await bot.handleUpdate(message("Другой пост"));
+  expect(s.state(2)).toBe(`saved:${second.id}`);
   expect(s.get(second.id).body).toBe("Другой пост");
 });
 it("does not create a new draft for repeated delivery after switching editors", async () => {
@@ -367,16 +372,46 @@ it("refreshes username via stable ID and rejects a stale username lookup", async
 });
 it("renders moderator profiles as escaped links, not bare IDs", async () => {
   profiles.set(3, { name: "<Mod>", username: "updated_mod" });
+  s.touch(4, "Head");
+  store.db.insert(t.moderators).values({ id: 4, role: "head" }).run();
   await bot.handleUpdate(message("👥 Модераторы", 1));
+  const team = String(lastText()?.text);
+  expect(team.indexOf("Владелец")).toBeLessThan(
+    team.indexOf("Главные модераторы"),
+  );
+  expect(team.indexOf("Главные модераторы")).toBeLessThan(
+    team.indexOf("🛡 Модераторы"),
+  );
+  expect(team.indexOf("tg://user?id=4")).toBeLessThan(
+    team.indexOf("tg://user?id=3"),
+  );
   expect(lastText()?.text).toContain("tg://user?id=3");
   expect(lastText()?.text).toContain("&lt;Mod&gt;");
   expect(lastText()?.text).toContain("@updated_mod");
   expect(lastText()?.text).not.toContain("/start");
 });
 it("preserves all drafts when the draft limit is reached", () => {
-  for (let i = 0; i < 20; i++) s.newDraft(2);
+  for (let i = 0; i < 20; i++) s.edit(2, s.newDraft(2).id, "Текст");
   expect(() => s.newDraft(2)).toThrow("20 черновиков");
   expect(store.db.select().from(t.submissions).all()).toHaveLength(20);
+});
+it("returns from statistics to management and from a card to the original history page", async () => {
+  const post = pending();
+  for (let i = 0; i < 11; i++) s.audit(1, post.id, "approve");
+  await bot.handleUpdate(callback("statistics", 1));
+  expect(JSON.stringify(lastText()?.reply_markup)).toContain(
+    '"callback_data":"manage"',
+  );
+  await bot.handleUpdate(callback("manage", 1));
+  expect(lastText()?.text).toBe("🛠 Управление");
+  await bot.handleUpdate(callback("history:10", 1));
+  expect(JSON.stringify(lastText()?.reply_markup)).toContain(
+    `moderate:${post.id}:h10`,
+  );
+  await bot.handleUpdate(callback(`moderate:${post.id}:h10`, 1));
+  expect(JSON.stringify(lastText()?.reply_markup)).toContain(
+    '"callback_data":"history:10"',
+  );
 });
 it("blocks non-subscribers and rechecks before accepting a submission", async () => {
   memberships.set(2, "left");
@@ -532,7 +567,7 @@ it("does not let a delayed album part interrupt an open text editor", async () =
   await bot.handleUpdate(callback(`edit:${other.id}`));
   await bot.handleUpdate(photo("late"));
   expect(s.files(original.id)).toHaveLength(2);
-  expect(s.state(2)).toBe(`edit:${other.id}:`);
+  expect(s.state(2)).toBe(`edit:${other.id}::`);
   await bot.handleUpdate(message("Исправлено"));
   expect(s.get(other.id).body).toBe("Исправлено");
 });
