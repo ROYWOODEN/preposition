@@ -9,13 +9,17 @@ import { flushNotifications } from "./notifications.js";
 import { eq } from "drizzle-orm";
 import { notifications } from "./db/schema.js";
 import { acquireLock } from "./lock.js";
+import { dailyBackup } from "./db/backup.js";
 try {
   loadEnvFile();
 } catch {
   /* Environment can be supplied externally. */
 }
 const config = readConfig(process.env);
+const releaseLock = acquireLock(config.DATABASE_PATH + ".instance.sqlite");
+process.once("exit", releaseLock);
 const store = openDatabase(config.DATABASE_PATH);
+if (process.argv.includes("--migrate")) store.migrate();
 store.assertReady();
 const log = pino(
   { level: config.LOG_LEVEL },
@@ -29,9 +33,6 @@ const log = pino(
     },
   ]),
 );
-const releaseLock = acquireLock(config.DATABASE_PATH + ".lock");
-process.once("exit", releaseLock);
-// Migrations are explicit: never silently change the production schema at startup.
 const service = new Service(store, config.OWNER_TELEGRAM_ID);
 service.recover();
 store.db
@@ -47,6 +48,19 @@ const bot = createBot(
 );
 bot.catch(() => log.error({ event: "update_failed" }));
 let stopping = false;
+let backupJob: Promise<void> | undefined;
+let backupTimer: ReturnType<typeof setInterval> | undefined;
+function checkBackup() {
+  if (stopping || backupJob) return;
+  backupJob = dailyBackup(store, process.env.BACKUP_DIR ?? "./backups")
+    .then((created) => {
+      if (created) log.info({ event: "backup_created" });
+    })
+    .catch(() => log.warn({ event: "backup_failed" }))
+    .finally(() => {
+      backupJob = undefined;
+    });
+}
 let notificationJob: Promise<void> = Promise.resolve();
 let notificationBusy = false;
 const timer = setInterval(() => {
@@ -82,8 +96,12 @@ try {
     { command: "id", description: "Мой Telegram ID" },
     { command: "help", description: "Помощь" },
   ]);
-  log.info({ event: "started" });
-  await bot.start({ allowed_updates: ["message", "callback_query"] });
+  if (!stopping) {
+    checkBackup();
+    backupTimer = setInterval(checkBackup, 60000);
+    log.info({ event: "started" });
+    await bot.start({ allowed_updates: ["message", "callback_query"] });
+  }
 } catch {
   log.error({
     event: "startup_or_polling_failed",
@@ -92,7 +110,9 @@ try {
   process.exitCode = 1;
 } finally {
   clearInterval(timer);
+  clearInterval(backupTimer);
   await notificationJob;
+  await backupJob;
   store.sqlite.close();
   log.info({ event: "stopped" });
 }
