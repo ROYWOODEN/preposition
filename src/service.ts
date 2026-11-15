@@ -98,6 +98,17 @@ export class Service {
     if (!result.changes) throw new UserError("Выберите обычного модератора.");
     this.audit(actor, null, `mod:promote:${target}`);
   }
+  demoteModerator(actor: number, target: number) {
+    if (actor !== this.owner) throw new UserError("Только владелец.");
+    this.manageModerator(actor, target);
+    const result = this.store.db
+      .update(t.moderators)
+      .set({ role: "moderator" })
+      .where(and(eq(t.moderators.id, target), eq(t.moderators.role, "head")))
+      .run();
+    if (!result.changes) throw new UserError("Выберите главного модератора.");
+    this.audit(actor, null, `mod:demote:${target}`);
+  }
   get(id: number) {
     const s = this.store.db
       .select()

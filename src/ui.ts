@@ -331,10 +331,10 @@ export function createUI(bot: Bot, s: Service, channel?: string) {
       lines.push(person(user));
       if (uid(ctx) === s.owner || m.role === "moderator")
         k.text(`Убрать: ${user.name.slice(0, 30)}`, `removeask:${m.id}`).row();
-      if (uid(ctx) === s.owner && m.role === "moderator")
+      if (uid(ctx) === s.owner)
         k.text(
-          `Повысить: ${user.name.slice(0, 25)}`,
-          `promoteask:${m.id}`,
+          `${m.role === "head" ? "Понизить" : "Повысить"}: ${user.name.slice(0, 25)}`,
+          `${m.role === "head" ? "demoteask" : "promoteask"}:${m.id}`,
         ).row();
     }
     if (!mods.length) lines.push("\nМодераторы пока не назначены.");

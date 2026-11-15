@@ -23,6 +23,11 @@ describe("SQLite and business rules", () => {
       expect(() => removeModerator(s, 3, protectedId)).toThrow();
     removeModerator(s, 3, 5);
     expect(s.isMod(5)).toBe(false);
+    expect(() => s.demoteModerator(3, 4)).toThrow();
+    s.demoteModerator(1, 4);
+    expect(s.isAdmin(4)).toBe(false);
+    expect(s.isMod(4)).toBe(true);
+    expect(() => s.demoteModerator(1, 4)).toThrow();
     removeModerator(s, 1, 3);
     expect(s.isAdmin(3)).toBe(false);
   });

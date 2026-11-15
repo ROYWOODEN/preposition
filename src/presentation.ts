@@ -36,6 +36,8 @@ export function historyAction(s: Service, action: string) {
   const [verb, detail, id] = action.split(":");
   if (verb === "mod" && detail === "promote")
     return `Назначен главный модератор: ${s.user(Number(id)).name}`;
+  if (verb === "mod" && detail === "demote")
+    return `Понижен до модератора: ${s.user(Number(id)).name}`;
   if (verb === "mod")
     return `${detail === "add" ? "Назначен модератор" : "Удалён модератор"}: ${s.user(Number(id)).name}`;
   if (verb === "block")

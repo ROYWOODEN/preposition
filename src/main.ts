@@ -9,18 +9,56 @@ import { flushNotifications } from "./notifications.js";
 import { eq } from "drizzle-orm";
 import { notifications } from "./db/schema.js";
 import { acquireLock } from "./lock.js";
-import { dailyBackup } from "./db/backup.js";
+import { dailyBackup, restoreMissingDatabase } from "./db/backup.js";
 try {
   loadEnvFile();
 } catch {
   /* Environment can be supplied externally. */
 }
 const config = readConfig(process.env);
-const releaseLock = acquireLock(config.DATABASE_PATH + ".instance.sqlite");
-process.once("exit", releaseLock);
-const store = openDatabase(config.DATABASE_PATH);
-if (process.argv.includes("--migrate")) store.migrate();
-store.assertReady();
+const backupDirectory = process.env.BACKUP_DIR ?? "./backups";
+const startupLog = pino({ level: config.LOG_LEVEL }, process.stdout);
+async function prepareDatabase() {
+  let stage = "lock";
+  try {
+    startupLog.info(
+      { stage, database: config.DATABASE_PATH },
+      "Получаем блокировку БД",
+    );
+    const releaseLock = acquireLock(config.DATABASE_PATH + ".instance.sqlite");
+    process.once("exit", releaseLock);
+    stage = "restore";
+    startupLog.info(
+      { stage, backupDirectory },
+      "Проверяем резервные копии для отсутствующей БД",
+    );
+    const restoredFrom = await restoreMissingDatabase(
+      config.DATABASE_PATH,
+      backupDirectory,
+    );
+    if (restoredFrom) startupLog.info({ restoredFrom }, "База восстановлена");
+    stage = "open";
+    const store = openDatabase(config.DATABASE_PATH);
+    try {
+      stage = "migrate";
+      if (process.argv.includes("--migrate")) {
+        startupLog.info({ stage }, "Применяем миграции БД");
+        store.migrate();
+      }
+      stage = "schema";
+      store.assertReady();
+      startupLog.info({ stage }, "База готова");
+      return store;
+    } catch (error) {
+      store.sqlite.close();
+      throw error;
+    }
+  } catch (error) {
+    startupLog.error({ stage, err: error }, "Не удалось подготовить базу");
+    throw error;
+  }
+}
+const store = await prepareDatabase();
 const log = pino(
   { level: config.LOG_LEVEL },
   pino.multistream([
@@ -52,11 +90,17 @@ let backupJob: Promise<void> | undefined;
 let backupTimer: ReturnType<typeof setInterval> | undefined;
 function checkBackup() {
   if (stopping || backupJob) return;
-  backupJob = dailyBackup(store, process.env.BACKUP_DIR ?? "./backups")
+  backupJob = dailyBackup(store, backupDirectory)
     .then((created) => {
-      if (created) log.info({ event: "backup_created" });
+      if (created)
+        log.info({ event: "backup_created" }, "Резервная копия создана");
     })
-    .catch(() => log.warn({ event: "backup_failed" }))
+    .catch((err: unknown) =>
+      log.warn(
+        { event: "backup_failed", err },
+        "Не удалось создать резервную копию",
+      ),
+    )
     .finally(() => {
       backupJob = undefined;
     });
@@ -80,14 +124,19 @@ async function stop() {
 }
 process.once("SIGINT", () => void stop());
 process.once("SIGTERM", () => void stop());
+let telegramStage = "init";
 try {
+  log.info({ stage: telegramStage }, "Подключаемся к Telegram");
   await bot.init();
+  telegramStage = "channel_permissions";
+  log.info({ stage: telegramStage }, "Проверяем права публикации");
   const member = await bot.api.getChatMember(
     config.TARGET_CHANNEL_ID,
     bot.botInfo.id,
   );
   if (member.status !== "administrator" || !member.can_post_messages)
     throw new Error("У бота нет права публикации в канале.");
+  telegramStage = "commands";
   await bot.api.setMyCommands([
     { command: "start", description: "Главное меню" },
     { command: "done", description: "Предпросмотр черновика" },
@@ -99,14 +148,23 @@ try {
   if (!stopping) {
     checkBackup();
     backupTimer = setInterval(checkBackup, 60000);
-    log.info({ event: "started" });
-    await bot.start({ allowed_updates: ["message", "callback_query"] });
+    telegramStage = "polling";
+    await bot.start({
+      allowed_updates: ["message", "callback_query"],
+      onStart: () => {
+        log.info({ event: "started" }, "Бот запущен");
+      },
+    });
   }
 } catch {
-  log.error({
-    event: "startup_or_polling_failed",
-    hint: "Проверьте конфигурацию, миграции, сеть и права бота.",
-  });
+  log.error(
+    {
+      event: "startup_or_polling_failed",
+      stage: telegramStage,
+      hint: "Проверьте конфигурацию, миграции, сеть и права бота.",
+    },
+    "Сбой при запуске или получении обновлений Telegram",
+  );
   process.exitCode = 1;
 } finally {
   clearInterval(timer);

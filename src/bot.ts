@@ -330,21 +330,31 @@ export function createBot(
       return;
     }
     s.admin(actor);
-    if (action === "promoteask" || action === "promote") {
+    if (
+      action === "promoteask" ||
+      action === "promote" ||
+      action === "demoteask" ||
+      action === "demote"
+    ) {
       if (actor !== s.owner) throw new UserError("Только владелец.");
-      if (action === "promoteask") {
+      const demote = action.startsWith("demote");
+      if (action.endsWith("ask")) {
         await ctx.reply(
-          `Назначить главного модератора?\n\n${person(s.user(id))}`,
+          `${demote ? "Понизить до обычного модератора?" : "Назначить главного модератора?"}\n\n${person(s.user(id))}`,
           {
             parse_mode: "HTML",
             reply_markup: new InlineKeyboard()
-              .text("Назначить", `promote:${id}`)
+              .text(
+                demote ? "Понизить" : "Назначить",
+                `${demote ? "demote" : "promote"}:${id}`,
+              )
               .text("Отмена", "moderators"),
           },
         );
         return;
       }
-      s.promoteModerator(actor, id);
+      if (demote) s.demoteModerator(actor, id);
+      else s.promoteModerator(actor, id);
       return ui.moderators(ctx);
     }
     if (action === "statistics") return ui.statistics(ctx);
